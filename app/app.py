@@ -1,13 +1,8 @@
-import os
-from pathlib import Path
-
 import streamlit as st
 import torch
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch.nn.functional as F
-import importlib
-import importlib.metadata
-from typing import Dict
+# --- THE FIX IS HERE: Import the specific DistilBERT tools ---
+from transformers import DistilBertTokenizer, DistilBertForSequenceClassification
 
 # --- Page Config ---
 st.set_page_config(
@@ -31,14 +26,14 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- Load the 99% Accuracy Model ---
+# --- Load the AI Model from Hugging Face ---
 @st.cache_resource
 def load_ai_model():
-    # This matches your Hugging Face repository exactly:
+    # Your Hugging Face Model ID
     model_id = "iammuhsina/spear-phishing-bert"
     
     try:
-        # Load Tokenizer and Model directly from the cloud
+        # Load Tokenizer and Model
         tokenizer = DistilBertTokenizer.from_pretrained(model_id)
         model = DistilBertForSequenceClassification.from_pretrained(model_id)
         
@@ -52,40 +47,6 @@ def load_ai_model():
 
 # Load model globally
 tokenizer, model, device = load_ai_model()
-
-
-def get_env_info() -> Dict[str, str]:
-    """Return a small snapshot of the runtime environment and package versions.
-
-    This is helpful for debugging missing dependency issues in different machines.
-    """
-    info = {}
-    try:
-        info['python'] = f"{importlib.metadata.version('python') if False else ''}{importlib.sys.version.split()[0]}"
-    except Exception:
-        info['python'] = importlib.sys.version.split()[0]
-
-    def _ver(pkg: str):
-        try:
-            return importlib.metadata.version(pkg)
-        except Exception:
-            return 'not-installed'
-
-    info['streamlit'] = _ver('streamlit')
-    info['torch'] = _ver('torch')
-    info['transformers'] = _ver('transformers')
-    info['device'] = str(device)
-    return info
-
-
-# Display a small environment panel in the sidebar to help debug installs
-with st.sidebar.expander('Environment & Versions'):
-    env = get_env_info()
-    st.write("Python:", env.get('python'))
-    st.write("streamlit:", env.get('streamlit'))
-    st.write("torch:", env.get('torch'))
-    st.write("transformers:", env.get('transformers'))
-    st.write("Device:", env.get('device'))
 
 # --- Main Interface ---
 st.title("🛡️ Spear Phishing Detection System")
@@ -101,7 +62,7 @@ if st.button("🔍 Scan Email", type="primary"):
     if not email_text.strip():
         st.warning("Please enter email text to scan.")
     else:
-        if model is not None and tokenizer is not None:
+        if model and tokenizer:
             with st.spinner("Analyzing linguistic patterns and context..."):
                 # 1. Tokenize
                 inputs = tokenizer(email_text, return_tensors="pt", truncation=True, max_length=512, padding=True)

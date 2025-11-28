@@ -34,15 +34,15 @@ st.markdown("""
 # --- Load the 99% Accuracy Model ---
 @st.cache_resource
 def load_ai_model():
-# Use your Hugging Face Model ID
-    # Format: "username/model-name"
+    # This matches your Hugging Face repository exactly:
     model_id = "iammuhsina/spear-phishing-bert"
     
     try:
-        # This automatically downloads the model from Hugging Face!
+        # Load Tokenizer and Model directly from the cloud
         tokenizer = DistilBertTokenizer.from_pretrained(model_id)
         model = DistilBertForSequenceClassification.from_pretrained(model_id)
         
+        # Use GPU if available, otherwise CPU
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model = model.to(device)
         return tokenizer, model, device

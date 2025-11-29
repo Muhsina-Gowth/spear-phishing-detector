@@ -1,6 +1,5 @@
-# app.py - SentinEL (Complete updated single-file app)
-# UI/UX-focused update: merged Advanced+Forensics, improved visual design, onboarding, Batch Scan preview includes label & export redaction
-# DEFAULT THRESHOLDS: lowered to 0.40 for higher sensitivity to spear-phishing
+# app.py - SentinEL (Enhanced hybrid scoring for broad spear-phishing detection)
+# UI-only changes: stronger, broader heuristics and presets (Normal/High/Aggressive).
 import streamlit as st
 import torch
 import torch.nn.functional as F
@@ -90,10 +89,7 @@ def simple_hash(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:10]
 
 def safe_extract_text_from_eml(raw: str) -> str:
-    """
-    Very small .eml/plaintext extractor.
-    Attempt to avoid rendering HTML and extract a plaintext body.
-    """
+    """Small .eml/plaintext extractor; removes tags and returns text body if present."""
     parts = raw.split("\n\n", 1)
     candidate = parts[1].strip() if len(parts) > 1 else raw
     candidate = re.sub(r"<style[\\s\\S]*?</style>", "", candidate, flags=re.I)
@@ -107,7 +103,6 @@ def redact_pii_for_export(text: str) -> str:
         return text
     text = re.sub(r"[\w\.-]+@[\w\.-]+", "[REDACTED_EMAIL]", text)
     text = re.sub(r"\b\d{6,}\b", "[REDACTED_NUMBER]", text)
-    # crude IBAN mask
     text = re.sub(r"\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b", "[REDACTED_IBAN]", text)
     return text
 
@@ -142,15 +137,19 @@ def predict_probability(text: str):
     return float(probs[1])
 
 # ---------------------------
-# Trigger scoring functions (unchanged detection logic)
+# Trigger scoring functions (unchanged detection logic - expanded keywords)
 # ---------------------------
-URL_RE = re.compile(r"https?://[\w\-\.\\?\\=/%&+#]+", flags=re.I)
+URL_RE = re.compile(r"https?://[^\s)'\"]+", flags=re.I)
+SHORT_URL_RE = re.compile(r"\b(?:bit\.ly|t\.co|tinyurl\.com|goo\.gl|ow\.ly|buff\.ly|rb\.gy|tiny\.cc)\b", flags=re.I)
 EMAIL_RE = re.compile(r"[\w\.-]+@[\w\.-]+", flags=re.I)
 CURRENCY_RE = re.compile(r'(\$\s?\d{1,3}(?:[,\d]{3})*(?:\.\d{1,2})?|\d+(?:\.\d{2})?\s?(?:usd|eur|aed|gbp)|(?:₹|£|€))', flags=re.I)
 
-AMOUNT_WORDS = ["invoice", "wire transfer", "transfer", "amount", "pay", "payment", "payable", "bank", "account", "iban"]
-ACTION_WORDS = ["send", "transfer", "wire", "pay", "release", "approve", "reset", "click", "login", "provide", "share"]
-AUTH_WORDS = ["ceo", "cfo", "hr", "manager", "director", "cto", "chief", "vp", "president"]
+AMOUNT_WORDS = ["invoice", "wire transfer", "transfer", "amount", "pay", "payment", "payable", "bank", "account", "iban", "remit", "deposit"]
+ACTION_WORDS = ["send", "transfer", "wire", "pay", "release", "approve", "reset", "click", "login", "provide", "share", "confirm", "verify"]
+AUTH_WORDS = ["ceo", "cfo", "hr", "manager", "director", "cto", "chief", "vp", "president", "owner"]
+CREDENTIAL_WORDS = ["password", "credentials", "login", "verify account", "reset password", "sign in", "sign-in", "authenticate"]
+ATTACHMENT_WORDS = ["attached", "attachment", "invoice attached", "see attached", "download attachment"]
+BRANDING_GREETINGS = ["dear", "hi", "hello", "greetings"]
 
 def extract_domain(url: str) -> str:
     try:
@@ -159,21 +158,29 @@ def extract_domain(url: str) -> str:
         return ""
 
 def likely_homoglyph(domain: str) -> bool:
+    if not domain:
+        return False
     if any(ch.isdigit() for ch in domain) and any(ch.isalpha() for ch in domain):
         return True
     if domain.count("-") >= 2:
         return True
     if len(domain.split(".")) > 3:
         return True
+    # repeated characters or suspicious TLDs can also be red flags (basic)
+    if re.search(r"[^\w\.]\1", domain):
+        return True
     return False
 
 def analyze_triggers_scored(text: str):
+    """
+    Heuristic detector collects many small signals and produces a trigger list + trigger_score.
+    """
     text_lower = text.lower()
     triggers = []
     score = 0.0
 
     # urgency
-    if any(w in text_lower for w in ["immediate", "urgent", "asap", "24 hours", "deadline", "now", "today"]):
+    if any(w in text_lower for w in ["immediate", "urgent", "asap", "24 hours", "deadline", "now", "today", "urgent action required"]):
         triggers.append({"id":"urgency","label":"Urgency", "why":"Uses time pressure words"})
         score += 0.12
 
@@ -186,6 +193,16 @@ def analyze_triggers_scored(text: str):
     if any(w in text_lower for w in AUTH_WORDS):
         triggers.append({"id":"authority","label":"Authority Appeal", "why":"Mentions senior roles"})
         score += 0.10
+
+    # credential-related words
+    if any(w in text_lower for w in CREDENTIAL_WORDS):
+        triggers.append({"id":"credential","label":"Credential Request", "why":"Asks for credentials or login/reset actions"})
+        score += 0.16
+
+    # attachment mentions
+    if any(w in text_lower for w in ATTACHMENT_WORDS):
+        triggers.append({"id":"attachment","label":"Attachment Mention", "why":"References attachments which can be malicious"})
+        score += 0.08
 
     # currency / amounts
     m = CURRENCY_RE.search(text)
@@ -203,12 +220,17 @@ def analyze_triggers_scored(text: str):
     urls = URL_RE.findall(text)
     if urls:
         triggers.append({"id":"urls","label":"External URL(s)", "why":f"Found {len(urls)} link(s)"})
-        score += 0.05
-        for u in urls[:3]:
+        score += 0.06
+        # detect short link services inside text too
+        if SHORT_URL_RE.search(text):
+            triggers.append({"id":"short_url","label":"Shortened Link", "why":"Shortened URL found (often used to hide destinations)"})
+            score += 0.12
+        # homoglyph detection
+        for u in urls[:5]:
             dom = extract_domain(u)
             if dom and likely_homoglyph(dom):
                 triggers.append({"id":"homoglyph","label":"Suspicious Link Domain", "why":f"Suspicious domain pattern: {dom}"})
-                score += 0.10
+                score += 0.12
 
     # emails
     emails = EMAIL_RE.findall(text)
@@ -217,11 +239,24 @@ def analyze_triggers_scored(text: str):
         if len(emails) > 1:
             score += 0.04
 
-    # CEO-style pattern (authority + action + money)
+    # greeting vs branding mismatch / generic greetings often used in phishing
+    # if opening has "Dear User" or "Dear Customer" etc, that's suspicious
+    if re.search(r"\bdear (customer|user|client|employee|member)\b", text_lower):
+        triggers.append({"id":"generic_greeting","label":"Generic Greeting", "why":"Generic salutations (e.g., 'Dear user' / 'Dear customer') used"})
+        score += 0.08
+
+    # sender/reply-to mismatch hints (best-effort: look for "From:" or "Reply-To:" lines in pasted raw text)
+    m_from = re.search(r"from:\s*([^\n\r<]+@[\w\.-]+)", text, flags=re.I)
+    m_reply = re.search(r"reply-?to:\s*([^\n\r<]+@[\w\.-]+)", text, flags=re.I)
+    if m_from and m_reply and m_from.group(1).lower() != m_reply.group(1).lower():
+        triggers.append({"id":"reply_mismatch","label":"Reply-To Mismatch", "why":"From: and Reply-To: differ (possible spoofing)"})
+        score += 0.14
+
+    # CEO-style pattern (authority + action + money) gets a notable boost but not forced override
     ceo_pattern = False
     if any(a in text_lower for a in AUTH_WORDS) and any(m in text_lower for m in AMOUNT_WORDS) and any(v in text_lower for v in ACTION_WORDS):
         triggers.append({"id":"ceo_fraud","label":"Executive Payment Pattern", "why":"Authority + Payment + Action detected — common in spear phishing"})
-        score += 0.30
+        score += 0.28
         ceo_pattern = True
 
     if score > 1.0:
@@ -236,13 +271,110 @@ def analyze_triggers_scored(text: str):
     }
 
 # ---------------------------
-# Composite risk (model + heuristics)
+# Legacy composite risk (kept)
 # ---------------------------
 def composite_risk(model_prob: float, trigger_score: float, alpha=0.7, beta=0.3):
     combined = alpha * float(model_prob) + beta * float(trigger_score)
     if trigger_score > 0.35 and model_prob < 0.6:
         combined = min(1.0, combined + 0.20 * trigger_score)
     return round(float(combined), 4)
+
+# ---------------------------
+# Enhanced rule-based final scoring (stronger, broader)
+# ---------------------------
+def get_presets(sensitivity: str):
+    """
+    Returns (alpha, beta, threshold, rule_boost_factor)
+    More aggressive presets give heuristics more influence.
+    """
+    s = (sensitivity or "Normal").lower()
+    if s == "aggressive":
+        return 0.45, 0.55, 0.28, 0.60   # heuristics dominate strongly
+    if s == "high":
+        return 0.55, 0.45, 0.33, 0.45   # balanced, leaning heuristics
+    # default Normal: model still matters but heuristics stronger than before
+    return 0.62, 0.38, 0.36, 0.35
+
+def _compute_trigger_severity(analysis: dict):
+    """
+    Convert analysis['triggers'] and other forensic signals into a 0..1 severity score.
+    Uses many signals: amount, action, credential, short links, homoglyphs, attachments, greeting mismatch etc.
+    """
+    tlist = analysis.get("triggers", []) or []
+    urls = analysis.get("urls", []) or []
+    emails = analysis.get("emails", []) or []
+    ceo = bool(analysis.get("ceo_pattern", False))
+
+    base = float(analysis.get("trigger_score", 0.0))
+
+    # link-related
+    link_bonus = 0.0
+    if urls:
+        link_bonus += 0.10
+        # extra if likely homoglyph domains or shortened URLs
+        for u in urls[:6]:
+            dom = extract_domain(u)
+            if dom and likely_homoglyph(dom):
+                link_bonus += 0.12
+        # detect short link strings already flagged as triggers (additional)
+        # this is partly handled in analyze_triggers_scored, but add small extra
+        if any(SHORT_URL_RE.search(u) for u in urls):
+            link_bonus += 0.08
+
+    # multi-signal bonus (more triggers → much higher suspicion)
+    multi_bonus = 0.0
+    ntrig = len(tlist)
+    if ntrig >= 2:
+        multi_bonus += 0.07 * min(ntrig, 6)  # up to +0.42
+    # additional bump for explicit money+action or credential flow
+    if any(t.get("id") in ("action_fin", "amount", "credential") for t in tlist):
+        multi_bonus += 0.18
+
+    # attachments boost
+    attach_bonus = 0.0
+    if any(t.get("id") == "attachment" for t in tlist):
+        attach_bonus += 0.10
+
+    # CEO bump
+    ceo_bonus = 0.18 if ceo else 0.0
+
+    # multiple emails (BCC style) small bump
+    email_bonus = 0.04 if len(emails) > 1 else 0.0
+
+    severity = base + link_bonus + multi_bonus + attach_bonus + ceo_bonus + email_bonus
+    if severity > 1.0:
+        severity = 1.0
+    return round(float(severity), 4)
+
+def compute_final_score(model_prob: float, analysis: dict, sensitivity: str = "Normal"):
+    """
+    Returns (final_combined, model_prob, trigger_score, severity)
+    Combines model_prob with structured heuristic severity and a sensitivity-based boost.
+    """
+    alpha, beta, base_threshold, rule_boost_factor = get_presets(sensitivity)
+
+    model_prob = float(model_prob or 0.0)
+    trigger_score = float(analysis.get("trigger_score", 0.0))
+
+    base_combined = alpha * model_prob + beta * trigger_score
+
+    severity = _compute_trigger_severity(analysis)
+
+    # Stronger boost proportional to severity and preset factor
+    if severity > 0:
+        boost = rule_boost_factor * severity
+        final = base_combined + boost
+    else:
+        final = base_combined
+
+    # If model is near zero but severity extremely high, ensure a high floor
+    if model_prob < 0.02 and severity >= 0.75:
+        final = max(final, 0.85)
+
+    # clamp
+    final = min(0.995, max(0.0, final))
+
+    return round(final, 4), round(model_prob, 4), round(trigger_score, 4), round(severity, 4)
 
 # ---------------------------
 # Gauge builder
@@ -267,7 +399,7 @@ def create_gauge(prob_percent: float):
     return fig
 
 # ---------------------------
-# Sidebar (simplified: single mode)
+# Sidebar (simplified)
 # ---------------------------
 with st.sidebar:
     st.image("https://img.icons8.com/fluency/48/000000/security-checked.png", width=48)
@@ -298,7 +430,7 @@ if not st.session_state["seen_onboard"]:
         st.session_state["seen_onboard"] = True
 
 # ---------------------------
-# Top navigation (Simple + Advanced merged)
+# Top navigation
 # ---------------------------
 selected = option_menu(
     menu_title=None,
@@ -321,9 +453,8 @@ if selected == "Simple Scanner":
         if st.button("Try example: CEO fraud (demo)"):
             st.session_state['quick_example'] = ("Subject: URGENT - Wire Transfer\n\nHi, I'm in a meeting. Please wire $5,000 to account 123-456-789 now. Thanks.")
     with example_col2:
-        if st.button("Try example: Safe email (demo)"):
-            st.session_state['quick_example'] = ("Subject: Team lunch\n\nHey team, shall we do lunch tomorrow at 1pm?")
-
+        if st.button("Try example: Credential phish (demo)"):
+            st.session_state['quick_example'] = ("Subject: Action required: Verify your account\n\nDear user, please verify your account by visiting http://bit.ly/verify-now and entering your credentials.")
     email_text = st.text_area("Paste email content", value=st.session_state.get('quick_example', ""), height=300, placeholder="Subject: ...")
     scan_btn = st.button("🔎 Scan Email")
     st.markdown('</div>', unsafe_allow_html=True)
@@ -342,14 +473,13 @@ if selected == "Simple Scanner":
                     prob_model = 0.0
 
                 analysis = analyze_triggers_scored(text)
-                trigger_score = analysis["trigger_score"]
-                combined = composite_risk(prob_model, trigger_score, alpha=0.7, beta=0.3)
+                combined, prob_model_r, trigger_score_r, severity = compute_final_score(prob_model, analysis, sensitivity="Normal")
                 percent = round(combined * 100, 2)
-                threshold = 0.4  # lowered default threshold for higher sensitivity
+                threshold = 0.36  # Normal quick-scan threshold (slightly more sensitive)
 
                 st.plotly_chart(create_gauge(percent), use_container_width=True)
+                st.markdown(f"**Model (raw):** {prob_model_r} &nbsp;&nbsp; **Trigger score:** {trigger_score_r} &nbsp;&nbsp; **Heuristic severity:** {severity}")
 
-                # Friendly result cards
                 if combined >= threshold:
                     st.markdown('<div class="danger-box">', unsafe_allow_html=True)
                     st.markdown('<h3 style="margin:0">🚨 This email is suspicious — do NOT act</h3>', unsafe_allow_html=True)
@@ -365,14 +495,14 @@ if selected == "Simple Scanner":
                     st.markdown('<p style="margin-top:8px">If unsure, open Advanced Tools to inspect links and headers.</p>', unsafe_allow_html=True)
                     st.markdown('</div>', unsafe_allow_html=True)
 
-                # Actions (export/report)
                 st.markdown("---")
                 if st.button("Download scan report (JSON)"):
                     report = {
                         "id": uid,
                         "timestamp": datetime.utcnow().isoformat() + "Z",
-                        "model_prob": prob_model,
-                        "trigger_score": trigger_score,
+                        "model_prob": prob_model_r,
+                        "trigger_score": trigger_score_r,
+                        "heuristic_severity": severity,
                         "combined_prob": combined,
                         "triggers": analysis["triggers"],
                     }
@@ -383,8 +513,9 @@ if selected == "Simple Scanner":
                 if st.button("Report a missed phishing (helps improve detection)"):
                     report = {
                         "text": text,
-                        "model_prob": prob_model,
-                        "trigger_score": trigger_score,
+                        "model_prob": prob_model_r,
+                        "trigger_score": trigger_score_r,
+                        "heuristic_severity": severity,
                         "combined_prob": combined,
                         "triggers": analysis["triggers"],
                         "timestamp": datetime.utcnow().isoformat() + "Z"
@@ -393,7 +524,7 @@ if selected == "Simple Scanner":
                     st.success("Thanks — example exported for retraining.")
 
 # ---------------------------
-# MERGED: ADVANCED TOOLS + FORENSICS (UI-only)
+# MERGED: ADVANCED TOOLS + FORENSICS
 # ---------------------------
 elif selected == "Advanced Tools":
     st.header("Advanced Tools — Expert Analysis")
@@ -412,10 +543,16 @@ elif selected == "Advanced Tools":
         run_btn = st.button("Run advanced analysis")
     with col_side:
         st.markdown("**Settings**")
-        adv_threshold = st.slider("Risk threshold (combined)", 0.0, 1.0, 0.4, 0.01)  # default lowered to 0.4
-        adv_alpha = st.slider("Model weight (alpha)", 0.0, 1.0, 0.7, 0.05)
-        adv_beta = round(1.0 - adv_alpha, 2)
-        st.markdown(f"- Heuristic weight (beta): **{adv_beta}**")
+        sensitivity = st.selectbox("Spear sensitivity", ["Normal", "High", "Aggressive"], index=0,
+                                   help="High/Aggressive increase detection sensitivity (may increase false positives).")
+        show_power = st.checkbox("Show model/heuristic weights (advanced)", value=False)
+        if show_power:
+            adv_alpha = st.slider("Model weight (alpha)", 0.0, 1.0, 0.62, 0.05)
+            adv_threshold = st.slider("Risk threshold (combined)", 0.0, 1.0, 0.36, 0.01)
+            adv_beta = round(1.0 - adv_alpha, 2)
+        else:
+            adv_alpha, adv_beta, adv_threshold, _ = get_presets(sensitivity)
+        st.markdown(f"- Heuristic weight (beta): **{round(adv_beta,2)}**")
         st.checkbox("Show forensic traces (links, emails)", value=True, key="adv_show_traces")
 
     if run_btn:
@@ -431,11 +568,11 @@ elif selected == "Advanced Tools":
                     prob_model = 0.0
 
                 analysis = analyze_triggers_scored(text)
-                combined = composite_risk(prob_model, analysis["trigger_score"], alpha=adv_alpha, beta=adv_beta)
+                combined, prob_model_r, trigger_score_r, severity = compute_final_score(prob_model, analysis, sensitivity=sensitivity)
                 percent = round(combined * 100, 2)
 
                 st.plotly_chart(create_gauge(percent), use_container_width=True)
-                st.markdown(f"**Combined probability:** {combined:.4f} &nbsp;&nbsp; **Model (raw):** {prob_model:.4f} &nbsp;&nbsp; **Trigger score:** {analysis['trigger_score']:.4f}")
+                st.markdown(f"**Combined probability:** {combined:.4f} &nbsp;&nbsp; **Model (raw):** {prob_model_r:.4f} &nbsp;&nbsp; **Trigger score:** {trigger_score_r:.4f} &nbsp;&nbsp; **Heuristic severity:** {severity}")
 
                 if combined >= adv_threshold:
                     st.markdown('<div class="danger-box"><h3>🚨 PHISHING RISK — do not act</h3><p class="hint">This combined analysis indicates risk. Expand Forensic Details to see reasons.</p></div>', unsafe_allow_html=True)
@@ -472,8 +609,9 @@ elif selected == "Advanced Tools":
                     if st.button("Download detailed report (JSON)"):
                         report = {
                             "timestamp": datetime.utcnow().isoformat() + "Z",
-                            "model_prob": prob_model,
-                            "trigger_score": analysis["trigger_score"],
+                            "model_prob": prob_model_r,
+                            "trigger_score": trigger_score_r,
+                            "heuristic_severity": severity,
                             "combined_prob": combined,
                             "triggers": analysis["triggers"]
                         }
@@ -483,8 +621,9 @@ elif selected == "Advanced Tools":
                     if st.button("Export example for retraining"):
                         report = {
                             "text": text,
-                            "model_prob": prob_model,
-                            "trigger_score": analysis["trigger_score"],
+                            "model_prob": prob_model_r,
+                            "trigger_score": trigger_score_r,
+                            "heuristic_severity": severity,
                             "combined_prob": combined,
                             "triggers": analysis["triggers"],
                             "timestamp": datetime.utcnow().isoformat() + "Z"
@@ -493,7 +632,7 @@ elif selected == "Advanced Tools":
                         st.success("Example exported (remember to remove sensitive PII if necessary).")
 
 # ---------------------------
-# BATCH SCAN (updated: preview + label + export redaction)
+# BATCH SCAN (updated: preview + label + export redaction + sensitivity)
 # ---------------------------
 elif selected == "Batch Scan":
     st.header("Batch Scan — CSV Input")
@@ -511,19 +650,19 @@ elif selected == "Batch Scan":
             if "text" not in df.columns:
                 st.error("CSV must contain a `text` column with email bodies.")
             else:
-                # Let user pick threshold for labeling
-                threshold = st.slider("Label threshold (combined probability >= threshold → PHISHING)", 0.0, 1.0, 0.4, 0.01)  # default 0.4
+                batch_sensitivity = st.selectbox("Batch sensitivity", ["Normal", "High", "Aggressive"], index=0)
+                preset_threshold = get_presets(batch_sensitivity)[2]
+                threshold = st.slider("Label threshold (combined probability >= threshold → PHISHING)", 0.0, 1.0, float(preset_threshold), 0.01)
 
                 st.info(f"Running predictions on {len(df)} rows. This may take time; progress updates appear below.")
                 probs = []
                 triggers_list = []
                 labels = []
 
-                # Simple progress indicator
                 progress_bar = st.progress(0)
                 total = len(df)
                 for i, row in df.iterrows():
-                    txt = str(row["text"])[:4000]  # limit length for inference
+                    txt = str(row["text"])[:4000]
                     try:
                         p_model = predict_probability(txt)
                     except Exception:
@@ -535,26 +674,23 @@ elif selected == "Batch Scan":
                         label = "ERROR"
                     else:
                         analysis = analyze_triggers_scored(txt)
-                        combined = composite_risk(p_model, analysis["trigger_score"])
+                        combined, _, _, _ = compute_final_score(p_model, analysis, sensitivity=batch_sensitivity)
                         triggers = analysis["triggers"]
-                        label = "PHISHING" if combined >= threshold else "SAFE"
+                        label = "PHISHING" if (combined is not None and combined >= threshold) else "SAFE"
 
                     probs.append(combined)
                     triggers_list.append(triggers)
                     labels.append(label)
 
-                    # update progress
                     if (i + 1) % 5 == 0 or (i + 1) == total:
                         progress_bar.progress((i + 1) / total)
 
-                # Attach results to dataframe
                 df["phish_prob"] = probs
                 df["label"] = labels
                 df["triggers"] = [json.dumps(t) if t is not None else "" for t in triggers_list]
 
                 st.success("Batch scan complete — preview below")
 
-                # Prepare readable preview
                 if "phish_prob" in df.columns:
                     df["phish_prob"] = df["phish_prob"].apply(lambda x: (round(x, 4) if (x is not None and not pd.isna(x)) else ""))
 
@@ -567,12 +703,9 @@ elif selected == "Batch Scan":
                     preview_cols.append("label")
 
                 preview_df = df[preview_cols].copy()
-
-                # Shorten long texts for preview only
                 if "text" in preview_df.columns:
                     preview_df["text"] = preview_df["text"].apply(lambda t: (t[:250] + "…") if isinstance(t, str) and len(t) > 300 else t)
 
-                # Styling: color rows based on label
                 def highlight_row(row):
                     lab = row.get("label", "")
                     if lab == "PHISHING":
@@ -588,10 +721,8 @@ elif selected == "Batch Scan":
                 except Exception:
                     st.dataframe(preview_df.head(200))
 
-                # Optional redaction setting before export
                 do_redact = st.checkbox("Redact emails and long numbers in exported CSV", value=True)
 
-                # Build export dataframe and order columns
                 export_df = df.copy()
                 if "triggers" in export_df.columns:
                     export_df["triggers"] = export_df["triggers"].apply(lambda t: t if isinstance(t, str) else json.dumps(t))
@@ -633,16 +764,16 @@ elif selected == "Docs":
     **About SentinEL**
 
     SentinEL is a research-grade spear-phishing risk scanner built for demonstration and analysis.
-    It combines a fine-tuned DistilBERT model with simple heuristic rules to better detect targeted attacks.
+    It combines a fine-tuned DistilBERT model with stronger, structured heuristics to better detect targeted attacks.
 
     **Important**
     - This tool is research/educational. For production use, integrate into a secure gateway with SPF/DKIM/DMARC checks and URL sandboxing.
     - Do not paste highly confidential information here in public environments.
     """)
     st.markdown("**Quick tips for analysts:**")
-    st.markdown("- Prioritize recall for spear-phishing detection (false negatives are costly).")
-    st.markdown("- Use the Export button in Advanced Tools to collect misses for active learning.")
-    st.markdown("- Maintain a separate red-team test set (50-200 spear emails) to evaluate recall.")
+    st.markdown("- Start with `Normal` sensitivity. Use `High`/`Aggressive` only for red-team/hunt mode.")
+    st.markdown("- Export missed examples to build a focused retraining set (active learning).")
+    st.markdown("- Maintain a red-team test set of real spear examples to measure recall.")
 
 # ---------------------------
 # Footer

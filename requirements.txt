@@ -1,3 +1,12 @@
-streamlit>=1.0
-transformers>=4.0
-torch>=1.13
+streamlit
+torch
+transformers
+scikit-learn
+pandas
+numpy
+vaderSentiment
+spacy
+accelerate
+evaluate
+plotly
+streamlit-option-menu

@@ -1,5 +1,5 @@
 # app.py - SentinEL (Complete updated single-file app)
-# UI/UX-focused update: merged Advanced+Forensics, improved visual design, onboarding, no model-feature changes.
+# UI/UX-focused update: merged Advanced+Forensics, improved visual design, onboarding, Batch Scan preview includes label & export redaction
 import streamlit as st
 import torch
 import torch.nn.functional as F
@@ -83,7 +83,7 @@ a, button, input, textarea { -webkit-tap-highlight-color: rgba(0,0,0,0); }
 """, unsafe_allow_html=True)
 
 # ---------------------------
-# Utilities: hashing + safe extraction
+# Utilities: hashing + safe extraction + redaction
 # ---------------------------
 def simple_hash(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:10]
@@ -100,6 +100,16 @@ def safe_extract_text_from_eml(raw: str) -> str:
     candidate = re.sub(r"\r\n", "\n", candidate)
     return candidate.strip()
 
+def redact_pii_for_export(text: str) -> str:
+    """Simple redaction: emails and long digit sequences."""
+    if not isinstance(text, str):
+        return text
+    text = re.sub(r"[\w\.-]+@[\w\.-]+", "[REDACTED_EMAIL]", text)
+    text = re.sub(r"\b\d{6,}\b", "[REDACTED_NUMBER]", text)
+    # crude IBAN mask
+    text = re.sub(r"\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b", "[REDACTED_IBAN]", text)
+    return text
+
 # ---------------------------
 # Model loading (cached)
 # ---------------------------
@@ -112,7 +122,7 @@ def load_model(model_id: str = "iammuhsina/spear-phishing-bert"):
         model.to(device)
         model.eval()
         return tokenizer, model, device
-    except Exception as e:
+    except Exception:
         return None, None, None
 
 tokenizer, model, device = load_model()
@@ -308,10 +318,10 @@ if selected == "Simple Scanner":
     example_col1, example_col2 = st.columns([1,1])
     with example_col1:
         if st.button("Try example: CEO fraud (demo)"):
-            st.session_state['quick_example'] = ("Subject: URGENT - Wire Transfer\\n\\nHi, I'm in a meeting. Please wire $5,000 to account 123-456-789 now. Thanks.")
+            st.session_state['quick_example'] = ("Subject: URGENT - Wire Transfer\n\nHi, I'm in a meeting. Please wire $5,000 to account 123-456-789 now. Thanks.")
     with example_col2:
         if st.button("Try example: Safe email (demo)"):
-            st.session_state['quick_example'] = ("Subject: Team lunch\\n\\nHey team, shall we do lunch tomorrow at 1pm?")
+            st.session_state['quick_example'] = ("Subject: Team lunch\n\nHey team, shall we do lunch tomorrow at 1pm?")
 
     email_text = st.text_area("Paste email content", value=st.session_state.get('quick_example', ""), height=300, placeholder="Subject: ...")
     scan_btn = st.button("🔎 Scan Email")
@@ -482,11 +492,12 @@ elif selected == "Advanced Tools":
                         st.success("Example exported (remember to remove sensitive PII if necessary).")
 
 # ---------------------------
-# BATCH SCAN
+# BATCH SCAN (updated: preview + label + export redaction)
 # ---------------------------
 elif selected == "Batch Scan":
     st.header("Batch Scan — CSV Input")
-    st.markdown("Upload a CSV with a column named `text` containing email bodies. The app will annotate each row with a phishing probability.")
+    st.markdown("Upload a CSV with a column named `text` containing email bodies. The app will annotate each row with a phishing probability and a readable label.")
+
     file = st.file_uploader("Upload CSV", type=["csv"])
     if file is not None:
         try:
@@ -494,33 +505,123 @@ elif selected == "Batch Scan":
         except Exception as e:
             st.error(f"Failed to read CSV: {e}")
             df = None
+
         if df is not None:
             if "text" not in df.columns:
                 st.error("CSV must contain a `text` column with email bodies.")
             else:
-                st.info(f"Running predictions on {len(df)} rows. This may take time.")
+                # Let user pick threshold for labeling
+                threshold = st.slider("Label threshold (combined probability >= threshold → PHISHING)", 0.0, 1.0, 0.5, 0.01)
+
+                st.info(f"Running predictions on {len(df)} rows. This may take time; progress updates appear below.")
                 probs = []
                 triggers_list = []
+                labels = []
+
+                # Simple progress indicator
+                progress_bar = st.progress(0)
+                total = len(df)
                 for i, row in df.iterrows():
-                    txt = str(row["text"])[:4000]
+                    txt = str(row["text"])[:4000]  # limit length for inference
                     try:
-                        p = predict_probability(txt)
+                        p_model = predict_probability(txt)
                     except Exception:
-                        p = None
-                    if p is None:
-                        probs.append(None)
-                        triggers_list.append(None)
-                        continue
-                    analysis = analyze_triggers_scored(txt)
-                    combined = composite_risk(p, analysis["trigger_score"])
+                        p_model = None
+
+                    if p_model is None:
+                        combined = None
+                        triggers = None
+                        label = "ERROR"
+                    else:
+                        analysis = analyze_triggers_scored(txt)
+                        combined = composite_risk(p_model, analysis["trigger_score"])
+                        triggers = analysis["triggers"]
+                        label = "PHISHING" if combined >= threshold else "SAFE"
+
                     probs.append(combined)
-                    triggers_list.append(analysis["triggers"])
+                    triggers_list.append(triggers)
+                    labels.append(label)
+
+                    # update progress
+                    if (i + 1) % 5 == 0 or (i + 1) == total:
+                        progress_bar.progress((i + 1) / total)
+
+                # Attach results to dataframe
                 df["phish_prob"] = probs
+                df["label"] = labels
+                df["triggers"] = [json.dumps(t) if t is not None else "" for t in triggers_list]
+
                 st.success("Batch scan complete — preview below")
-                st.dataframe(df.head(200))
-                csv = df.to_csv(index=False)
-                b64 = base64.b64encode(csv.encode()).decode()
-                st.markdown(f"[Download annotated CSV](data:text/csv;base64,{b64})", unsafe_allow_html=True)
+
+                # Prepare readable preview
+                if "phish_prob" in df.columns:
+                    df["phish_prob"] = df["phish_prob"].apply(lambda x: (round(x, 4) if (x is not None and not pd.isna(x)) else ""))
+
+                preview_cols = []
+                if "text" in df.columns:
+                    preview_cols.append("text")
+                if "phish_prob" in df.columns:
+                    preview_cols.append("phish_prob")
+                if "label" in df.columns:
+                    preview_cols.append("label")
+
+                preview_df = df[preview_cols].copy()
+
+                # Shorten long texts for preview only
+                if "text" in preview_df.columns:
+                    preview_df["text"] = preview_df["text"].apply(lambda t: (t[:250] + "…") if isinstance(t, str) and len(t) > 300 else t)
+
+                # Styling: color rows based on label
+                def highlight_row(row):
+                    lab = row.get("label", "")
+                    if lab == "PHISHING":
+                        return ['background-color: #fff1f1'] * len(row)
+                    elif lab == "SAFE":
+                        return ['background-color: #f0fdf4'] * len(row)
+                    else:
+                        return [''] * len(row)
+
+                try:
+                    styled = preview_df.style.apply(highlight_row, axis=1)
+                    st.dataframe(styled, height=420)
+                except Exception:
+                    st.dataframe(preview_df.head(200))
+
+                # Optional redaction setting before export
+                do_redact = st.checkbox("Redact emails and long numbers in exported CSV", value=True)
+
+                # Build export dataframe and order columns
+                export_df = df.copy()
+                if "triggers" in export_df.columns:
+                    export_df["triggers"] = export_df["triggers"].apply(lambda t: t if isinstance(t, str) else json.dumps(t))
+
+                if do_redact and "text" in export_df.columns:
+                    export_df["text_redacted"] = export_df["text"].apply(redact_pii_for_export)
+                    export_cols = [c for c in export_df.columns if c != "text"]
+                else:
+                    export_cols = list(export_df.columns)
+
+                preferred_order = []
+                if "text_redacted" in export_cols:
+                    preferred_order.append("text_redacted")
+                elif "text" in export_cols:
+                    preferred_order.append("text")
+                if "phish_prob" in export_cols:
+                    preferred_order.append("phish_prob")
+                if "label" in export_cols:
+                    preferred_order.append("label")
+                if "triggers" in export_cols:
+                    preferred_order.append("triggers")
+                for c in export_cols:
+                    if c not in preferred_order:
+                        preferred_order.append(c)
+                export_df = export_df[preferred_order]
+
+                csv_bytes = export_df.to_csv(index=False).encode("utf-8")
+                b64 = base64.b64encode(csv_bytes).decode()
+                download_name = f"sentinel_batch_results_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+                st.markdown(f"[Download annotated CSV]({'data:text/csv;base64,' + b64})", unsafe_allow_html=True)
+                st.download_button("Download CSV file", data=csv_bytes, file_name=download_name, mime="text/csv")
 
 # ---------------------------
 # DOCS

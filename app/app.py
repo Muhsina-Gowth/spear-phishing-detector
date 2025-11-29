@@ -465,10 +465,10 @@ if selected == "Simple Scanner":
 
     example_col1, example_col2 = st.columns([1,1])
     with example_col1:
-        if st.button("Try example: CEO fraud (demo)"):
-            st.session_state['quick_example'] = ("Subject: URGENT - Wire Transfer\n\nHi, I'm in a meeting. Please wire $5,000 to account 123-456-789 now. Thanks.")
+        if st.button("Try example: legitimate"):
+            st.session_state['quick_example'] = ("Subject: Scheduled Server Maintenance\n\nAll Staff, This is a reminder that IT will be performing upgrades on the email server this Saturday night. You may experience brief connectivity issues between 10 PM and 2 AM. No action is required from you. Your passwords and access will remain unchanged. IT Service Desk")
     with example_col2:
-        if st.button("Try example: Credential phish (demo)"):
+        if st.button("Try example: Credential phish"):
             st.session_state['quick_example'] = ("Subject: Action required: Verify your account\n\nDear user, please verify your account by visiting http://bit.ly/verify-now and entering your credentials.")
     email_text = st.text_area("Paste email content", value=st.session_state.get('quick_example', ""), height=300, placeholder="Subject: ...")
     scan_btn = st.button("🔎 Scan Email")

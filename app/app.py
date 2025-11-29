@@ -498,14 +498,14 @@ if selected == "Simple Scanner":
                 if combined >= threshold:
                     st.markdown('<div class="danger-box">', unsafe_allow_html=True)
                     st.markdown('<h3 style="margin:0">🚨 This email is suspicious — do NOT act</h3>', unsafe_allow_html=True)
-                    st.markdown('<p class="hint" style="margin:6px 0 0 0">Short reason: <span class="kv">{}</span></p>'.format(
+                    st.markdown('<p class="hint" style="margin:6px 0 0 0">Details: <span class="kv">{}</span></p>'.format(
                         ", ".join([t['label'] for t in analysis['triggers'][:3]]) if analysis['triggers'] else "Suspicious patterns detected"), unsafe_allow_html=True)
                     st.markdown('<p style="margin-top:8px">Suggested next steps: <strong>Do not click links</strong>. Forward to your security team or download the scan report.</p>', unsafe_allow_html=True)
                     st.markdown('</div>', unsafe_allow_html=True)
                 else:
                     st.markdown('<div class="safe-box">', unsafe_allow_html=True)
                     st.markdown('<h3 style="margin:0">✅ Likely Safe</h3>', unsafe_allow_html=True)
-                    st.markdown('<p class="hint" style="margin-top:6px">Short reason: <span class="kv">{}</span></p>'.format(
+                    st.markdown('<p class="hint" style="margin-top:6px">Details: <span class="kv">{}</span></p>'.format(
                         ", ".join([t['label'] for t in analysis['triggers'][:2]]) if analysis['triggers'] else "No strong indicators"), unsafe_allow_html=True)
                     st.markdown('<p style="margin-top:8px">If unsure, open Advanced Tools to inspect links and headers.</p>', unsafe_allow_html=True)
                     st.markdown('</div>', unsafe_allow_html=True)

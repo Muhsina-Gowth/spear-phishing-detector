@@ -1,5 +1,6 @@
 # app.py - SentinEL (Complete updated single-file app)
 # UI/UX-focused update: merged Advanced+Forensics, improved visual design, onboarding, Batch Scan preview includes label & export redaction
+# DEFAULT THRESHOLDS: lowered to 0.40 for higher sensitivity to spear-phishing
 import streamlit as st
 import torch
 import torch.nn.functional as F
@@ -344,7 +345,7 @@ if selected == "Simple Scanner":
                 trigger_score = analysis["trigger_score"]
                 combined = composite_risk(prob_model, trigger_score, alpha=0.7, beta=0.3)
                 percent = round(combined * 100, 2)
-                threshold = 0.5
+                threshold = 0.4  # lowered default threshold for higher sensitivity
 
                 st.plotly_chart(create_gauge(percent), use_container_width=True)
 
@@ -411,7 +412,7 @@ elif selected == "Advanced Tools":
         run_btn = st.button("Run advanced analysis")
     with col_side:
         st.markdown("**Settings**")
-        adv_threshold = st.slider("Risk threshold (combined)", 0.0, 1.0, 0.5, 0.01)
+        adv_threshold = st.slider("Risk threshold (combined)", 0.0, 1.0, 0.4, 0.01)  # default lowered to 0.4
         adv_alpha = st.slider("Model weight (alpha)", 0.0, 1.0, 0.7, 0.05)
         adv_beta = round(1.0 - adv_alpha, 2)
         st.markdown(f"- Heuristic weight (beta): **{adv_beta}**")
@@ -511,7 +512,7 @@ elif selected == "Batch Scan":
                 st.error("CSV must contain a `text` column with email bodies.")
             else:
                 # Let user pick threshold for labeling
-                threshold = st.slider("Label threshold (combined probability >= threshold → PHISHING)", 0.0, 1.0, 0.5, 0.01)
+                threshold = st.slider("Label threshold (combined probability >= threshold → PHISHING)", 0.0, 1.0, 0.4, 0.01)  # default 0.4
 
                 st.info(f"Running predictions on {len(df)} rows. This may take time; progress updates appear below.")
                 probs = []

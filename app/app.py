@@ -510,33 +510,6 @@ if selected == "Simple Scanner":
                     st.markdown('<p style="margin-top:8px">If unsure, open Advanced Tools to inspect links and headers.</p>', unsafe_allow_html=True)
                     st.markdown('</div>', unsafe_allow_html=True)
 
-                st.markdown("---")
-                if st.button("Download scan report (JSON)"):
-                    report = {
-                        "id": uid,
-                        "timestamp": datetime.utcnow().isoformat() + "Z",
-                        "model_prob": prob_model_r,
-                        "trigger_score": trigger_score_r,
-                        "heuristic_severity": severity,
-                        "combined_prob": combined,
-                        "triggers": analysis["triggers"],
-                    }
-                    b64 = base64.b64encode(json.dumps(report, indent=2).encode()).decode()
-                    href = f"data:application/json;base64,{b64}"
-                    st.markdown(f"[Download report]({href})", unsafe_allow_html=True)
-
-                if st.button("Report a missed phishing (helps improve detection)"):
-                    report = {
-                        "text": text,
-                        "model_prob": prob_model_r,
-                        "trigger_score": trigger_score_r,
-                        "heuristic_severity": severity,
-                        "combined_prob": combined,
-                        "triggers": analysis["triggers"],
-                        "timestamp": datetime.utcnow().isoformat() + "Z"
-                    }
-                    st.download_button("Download example JSON", data=json.dumps(report, indent=2), file_name="sentinel_mistake.json")
-                    st.success("Thanks — example exported for retraining.")
 
 # ---------------------------
 # MERGED: ADVANCED TOOLS + FORENSICS
@@ -594,7 +567,7 @@ elif selected == "Advanced Tools":
                 else:
                     st.markdown('<div class="safe-box"><h3>✅ Likely Safe</h3><p class="hint">No strong combined indicators detected. Expand Forensic Details for more information.</p></div>', unsafe_allow_html=True)
 
-                with st.expander("Forensic details (analyst only)", expanded=False):
+                with st.expander("Forensic details", expanded=False):
                     st.markdown("**Top heuristic triggers**")
                     if analysis["triggers"]:
                         for t in analysis["triggers"]:
@@ -618,33 +591,6 @@ elif selected == "Advanced Tools":
                             st.text(" ".join(tokens))
                         except Exception:
                             st.info("Token preview unavailable (tokenizer not loaded).")
-
-                with st.expander("Export & active-learning (use carefully)", expanded=False):
-                    st.markdown("You can export a scan report for retraining or sharing with security. For privacy, sensitive data is not shared automatically. Only export when appropriate.")
-                    if st.button("Download detailed report (JSON)"):
-                        report = {
-                            "timestamp": datetime.utcnow().isoformat() + "Z",
-                            "model_prob": prob_model_r,
-                            "trigger_score": trigger_score_r,
-                            "heuristic_severity": severity,
-                            "combined_prob": combined,
-                            "triggers": analysis["triggers"]
-                        }
-                        b64 = base64.b64encode(json.dumps(report, indent=2).encode()).decode()
-                        st.markdown(f"[Download report](data:application/json;base64,{b64})", unsafe_allow_html=True)
-
-                    if st.button("Export example for retraining"):
-                        report = {
-                            "text": text,
-                            "model_prob": prob_model_r,
-                            "trigger_score": trigger_score_r,
-                            "heuristic_severity": severity,
-                            "combined_prob": combined,
-                            "triggers": analysis["triggers"],
-                            "timestamp": datetime.utcnow().isoformat() + "Z"
-                        }
-                        st.download_button("Download JSON", data=json.dumps(report, indent=2), file_name="sentinel_forensic_example.json")
-                        st.success("Example exported (remember to remove sensitive PII if necessary).")
 
 # ---------------------------
 # BATCH SCAN (updated: preview + label + export redaction + sensitivity)
@@ -767,7 +713,6 @@ elif selected == "Batch Scan":
                 csv_bytes = export_df.to_csv(index=False).encode("utf-8")
                 b64 = base64.b64encode(csv_bytes).decode()
                 download_name = f"sentinel_batch_results_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
-                st.markdown(f"[Download annotated CSV]({'data:text/csv;base64,' + b64})", unsafe_allow_html=True)
                 st.download_button("Download CSV file", data=csv_bytes, file_name=download_name, mime="text/csv")
 
 # ---------------------------
@@ -782,16 +727,15 @@ elif selected == "Docs":
     It combines a fine-tuned DistilBERT model with stronger, structured heuristics to better detect targeted attacks.
 
     **Important**
-    - This tool is research/educational. For production use, integrate into a secure gateway with SPF/DKIM/DMARC checks and URL sandboxing.
+    - This tool is research/educational. 
     - Do not paste highly confidential information here in public environments.
     """)
     st.markdown("**Quick tips for analysts:**")
     st.markdown("- Start with `Normal` sensitivity. Use `High`/`Aggressive` only for red-team/hunt mode.")
-    st.markdown("- Export missed examples to build a focused retraining set (active learning).")
-    st.markdown("- Maintain a red-team test set of real spear examples to measure recall.")
+ 
 
 # ---------------------------
 # Footer
 # ---------------------------
 st.markdown("---")
-st.markdown("Built by Muhsina — MSc Cyber Security | For research & education purposes.")
+st.markdown("Built by Muhsina — MSc Cyber Security | For Masters Project.")

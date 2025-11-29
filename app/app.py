@@ -215,7 +215,7 @@ def analyze_triggers_scored(text: str):
 
     # credential-related words
     if any(w in text_lower for w in CREDENTIAL_WORDS):
-        triggers.append({"id":"credential","label":"Credential Request", "why":"Asks for credentials or login/reset actions"})
+        triggers.append({"id":"credential","label":"Credential Related Mention", "why":"Asks for credentials or login/reset actions or mentions about passwords"})
         score += 0.16
 
     # attachment mentions

@@ -1,4 +1,4 @@
-# Spear Phishing Detection (Streamlit)
+# Spear Phishing Detection
 
 This repository contains a Streamlit app that loads a fine-tuned Transformer model to detect spear-phishing emails.
 

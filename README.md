@@ -4,7 +4,7 @@ This repository contains a Streamlit app that loads a fine-tuned Transformer mod
 
 Prerequisites
 
-- Python 3.8+
+- Python 3.8
 - A fine-tuned model placed at `models/model_package` (should include tokenizer files and model weights, e.g., `config.json`, `pytorch_model.bin` or `model.safetensors`).
 
 Quick setup (macOS / zsh)
